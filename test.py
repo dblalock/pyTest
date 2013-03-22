@@ -1,27 +1,31 @@
 #!/bin/python
 
-from serialinterface_test import SerialInterface
-#from serialinterface import SerialInterface
+from ftdi_interface import SerialInterface
 from datetime import datetime
 import time
 
-C_WINDOW_SZ = 8			# congestion window, so we send at the right rate
-MAX_PACKET_ID = 65535
-DEFAULT_SLEEP_DURATION = .001
-MAX_SLEEP_DURATION = 2
+DEBUG = 1
+
+CONGESTION_WINDOW_SZ = 8 # congestion window, so we send at the right rate
+MAX_PACKET_ID = DEBUG and 1000 or 65535	# smaller runs for debugging
+DEFAULT_SLEEP_DURATION = 0
+MAX_SLEEP_DURATION = .01
+BAUD_RATES_LIST = (38400,115200,230400,460800,921600)
 LOG_FILE = "errLog.txt"
+ERRORS_CSV_FILE = "errors.csv"
+
+def printVar(varName):
+	"""utility method for debugging"""
+	print(varName + " = " + str(eval(varName)) )
 
 class SerialTest:
 
 	def __init__(self):
 		self.ser = SerialInterface(self._receive_data)
-#		self.logFile = open(LOG_FILE, 'a')
+		self.bauds2errors = {}
 	
 	def _receive_data(self,data):
 		"""callback to be invoked when serial data is received"""
-		
-		print("callback invoked")
-		
 		# convert bytes to int
 		data = int(data)
 		
@@ -59,17 +63,19 @@ class SerialTest:
 				self.expected_packet_id = self._nextPacketId(self.expected_packet_id)
 				self._logError(initial_expected_packet_id, e)
 
-	def start(self):
+	def test_baud_rate(self, baud_rate):
 		self.unacked_packets = 0
 		self.expected_packet_id = 1
 		self.send_packet_id = 1
+		self.ser.set_baud_rate(baud_rate)
+		self.error_count = 0
 		self._tx_next_packet()
 		
 		# if we haven't filled up congestion window, send another packet.
 		# If we have, exponential backoff
-		while(1):
-			time.sleep(.01)
-			if (self.unacked_packets <= C_WINDOW_SZ):
+		while(self.expected_packet_id < MAX_PACKET_ID):
+			#time.sleep(.01)
+			if (self.unacked_packets <= CONGESTION_WINDOW_SZ):
 				self.sleep_duration = DEFAULT_SLEEP_DURATION;
 				self._tx_next_packet()
 			else:
@@ -77,24 +83,34 @@ class SerialTest:
 				self.sleep_duration = min( \
 					MAX_SLEEP_DURATION, self.sleep_duration*2)
 				time.sleep(self.sleep_duration)
+				
+		#record how many errors we encountered at this baud rate
+		self.bauds2errors[baud_rate] = self.error_count
 		
 	def _tx_next_packet(self):
 		self.unacked_packets += 1
-		print("sent packet: {0}".format(self.send_packet_id) )
 		self.ser.tx( self.send_packet_id )
 		self.send_packet_id = self._nextPacketId(self.send_packet_id)
 		
 	def _logSuccess(self, packetId):
-		print("received packet: {0}".format(packetId) )
+		print("sent and received packet: {0}".format(packetId) )
 		
 	def _logError(self,packetId, e=None):
-		errStr = "Err: Expected value {0}, but received {1}".format(packetId,e)
+		self.error_count += 1
+		errStr = "Err: Expected {0}, Received {1}".format(packetId,e)
 		print(errStr)
 		with open(LOG_FILE, 'a') as f:
-			f.write("{} - ".format(str(datetime.now()) ) )
-			f.write(errStr + "\n")
-#		self.logFile.write(errStr)
+			f.write("{0} - {1} - {2}\n".format(
+				str(datetime.now()),
+				self.ser.get_baud_rate(),
+				errStr ) )
 
+	def _exportErrors(self):
+		with open(ERRORS_CSV_FILE, 'w') as f:
+			for key, value in self.bauds2errors.items():
+				f.write("{0}, {1}\n".format(key,value) )
+		
+	
 	def _nextPacketId(self,currentId):
 		"""return the next id for a packet; either adds 1 or
 		loops around to 1 if at the max value"""
@@ -103,9 +119,10 @@ class SerialTest:
 		else:
 			return 1
 
-	def printVar(self,varName):
-		print(varName + " = " + str(eval(varName)) )
+	def start(self):
+		for baud_rate in BAUD_RATES_LIST:
+			self.test_baud_rate(baud_rate)
+		self._exportErrors()
 
 if __name__ == "__main__":
 	SerialTest().start()
-
